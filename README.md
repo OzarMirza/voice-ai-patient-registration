@@ -240,9 +240,12 @@ VAPI_API_KEY=<from Vapi → Settings → API Keys>
 VAPI_SERVER_SECRET=<openssl rand -hex 32>
 ```
 
-Koyeb injects `PORT` itself. Confirm `GET /health` returns `"status": "healthy"` and
-`"database": "ok"` — that endpoint runs a real query, so it fails loudly if the Turso credentials
-are wrong rather than reporting healthy until the first phone call.
+Koyeb injects `PORT` itself. Confirm `GET /health` returns `"status": "healthy"`, `"database": "ok"` and — the important one —
+`"storage": "turso"` with `"persistent": true`. That endpoint runs a real query, so wrong Turso
+credentials fail loudly instead of passing silently. If `DATABASE_URL` is missing, the app connects
+happily to a local file and would otherwise look perfectly healthy right up until the container
+restarts and takes every patient record with it; `/health` names the active driver and warns
+outright when production storage is not durable.
 
 > **Keepalive.** Koyeb's free instance scales to zero after 1 hour with no traffic, and the cold
 > start (~5s) would land inside a caller's first turn. A free cron ping to `/health` every 15
@@ -383,8 +386,9 @@ transcripts per patient.
 1. **SQLite/libSQL rather than Postgres.** Correct for this scale and explicitly sanctioned by the
    brief. The service layer is the only code that issues SQL, so moving to Postgres would be a
    contained change — the Turso swap already exercised exactly that seam and touched no route, tool
-   or test. **If `DATABASE_URL` is unset in production the app silently falls back to a local file,
-   which an ephemeral filesystem will erase on restart;** `/health` reports which driver is live.
+   or test. **If `DATABASE_URL` is unset in production the app falls back to a local file,
+   which an ephemeral filesystem will erase on restart** — so `/health` names the active driver and
+   sets `persistent: false` with an explicit warning rather than letting that pass silently.
 2. **The free instance sleeps.** Koyeb's free tier scales to zero after an hour idle, mitigated with
    a cron ping (above). If that ping is ever removed, the first call after an idle hour eats a ~5s
    cold start.

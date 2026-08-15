@@ -206,3 +206,11 @@ describe('health', () => {
     assert.equal(res.body.data.database, 'ok');
   });
 });
+
+describe('health reports storage durability', () => {
+  test('names the active driver so a misconfigured deploy is visible', async () => {
+    const res = await call('GET', '/health');
+    assert.equal(res.body.data.storage, 'sqlite', 'tests run on the local driver');
+    assert.equal(res.body.data.persistent, true, 'not production, so no warning');
+  });
+});
