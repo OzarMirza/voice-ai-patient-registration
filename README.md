@@ -7,10 +7,10 @@ conversation, persists the record to a database, and exposes it over a REST API 
 >
 > | | |
 > |---|---|
-> | 📞 **Phone number** | `+1 (XXX) XXX-XXXX` |
-> | 🌐 **API base URL** | `https://<your-app>.onrender.com` |
-> | 📊 **Dashboard** | `https://<your-app>.onrender.com/dashboard` |
-> | ❤️ **Health check** | `https://<your-app>.onrender.com/health` |
+> | 📞 **Phone number** | **`+1 (859) 997-6128`** |
+> | 🌐 **API base URL** | `https://voice-ai-patient-registration.onrender.com` |
+> | 📊 **Dashboard** | `https://voice-ai-patient-registration.onrender.com/dashboard` |
+> | ❤️ **Health check** | `https://voice-ai-patient-registration.onrender.com/health` |
 >
 > No credentials are required to test the API — `GET`, `POST`, `PUT` and `DELETE` are all open
 > for review. (An `API_KEY` gate is implemented and can be switched on with one env var; see
