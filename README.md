@@ -8,9 +8,9 @@ conversation, persists the record to a database, and exposes it over a REST API 
 > | | |
 > |---|---|
 > | 📞 **Phone number** | `+1 (XXX) XXX-XXXX` |
-> | 🌐 **API base URL** | `https://<your-app>.koyeb.app` |
-> | 📊 **Dashboard** | `https://<your-app>.koyeb.app/dashboard` |
-> | ❤️ **Health check** | `https://<your-app>.koyeb.app/health` |
+> | 🌐 **API base URL** | `https://<your-app>.onrender.com` |
+> | 📊 **Dashboard** | `https://<your-app>.onrender.com/dashboard` |
+> | ❤️ **Health check** | `https://<your-app>.onrender.com/health` |
 >
 > No credentials are required to test the API — `GET`, `POST`, `PUT` and `DELETE` are all open
 > for review. (An `API_KEY` gate is implemented and can be switched on with one env var; see
@@ -212,9 +212,11 @@ shapes.
 
 ## Deployment
 
-Deployed on free infrastructure: **Koyeb** for compute, **Turso** for storage. Compute and storage
+Deployed on free infrastructure: **Render** for compute, **Turso** for storage. Compute and storage
 are separated deliberately — free tiers give you an ephemeral filesystem, so the database cannot
-live next to the app.
+live next to the app. That separation is what makes a free instance usable at all: Render's free
+plan cannot mount a persistent disk, which would be disqualifying if the database were a local
+file.
 
 ### 1. Create the database (Turso)
 
@@ -227,30 +229,32 @@ turso db tokens create patient-registry     # -> DATABASE_AUTH_TOKEN
 Free plan: 5 GB, no credit card, no expiry. The schema is applied automatically on first boot —
 `schema.sql` is written entirely with `IF NOT EXISTS`, so startup doubles as the migration.
 
-### 2. Deploy the service (Koyeb)
+### 2. Deploy the service (Render)
 
-Create a Web Service from this GitHub repo, Dockerfile builder, **Free** instance type, health
-check path `/health`. Set the environment variables:
+`render.yaml` in the repo root is a Render Blueprint: **New → Blueprint → pick this repo** and
+Render reads the service definition and prompts for each secret. Set:
 
 ```
 DATABASE_URL=libsql://patient-registry-<org>.turso.io
 DATABASE_AUTH_TOKEN=<token from above>
-PUBLIC_BASE_URL=https://<your-app>-<org>.koyeb.app
-VAPI_API_KEY=<from Vapi → Settings → API Keys>
+PUBLIC_BASE_URL=https://<your-app>.onrender.com
 VAPI_SERVER_SECRET=<openssl rand -hex 32>
 ```
 
-Koyeb injects `PORT` itself. Confirm `GET /health` returns `"status": "healthy"`, `"database": "ok"` and — the important one —
+`PUBLIC_BASE_URL` has to be filled in after the first deploy, since the address does not exist
+until Render assigns it. Render injects `PORT` itself. Confirm `GET /health` returns `"status": "healthy"`, `"database": "ok"` and — the important one —
 `"storage": "turso"` with `"persistent": true`. That endpoint runs a real query, so wrong Turso
 credentials fail loudly instead of passing silently. If `DATABASE_URL` is missing, the app connects
 happily to a local file and would otherwise look perfectly healthy right up until the container
 restarts and takes every patient record with it; `/health` names the active driver and warns
 outright when production storage is not durable.
 
-> **Keepalive.** Koyeb's free instance scales to zero after 1 hour with no traffic, and the cold
-> start (~5s) would land inside a caller's first turn. A free cron ping to `/health` every 15
-> minutes (cron-job.org, UptimeRobot) prevents it from ever sleeping. This is a free-tier
-> workaround, not an architectural choice — a paid instance would simply disable scale-to-zero.
+> **Keepalive — required.** Render's free instance sleeps after 15 minutes with no traffic, and the
+> cold start is 30–60 seconds. A reviewer calling a sleeping service would hear silence, then a
+> failed call. A free cron ping to `/health` every **10 minutes** (cron-job.org, UptimeRobot) keeps
+> it permanently awake; the free plan's 750 instance-hours/month covers one service running
+> continuously. This is a free-tier workaround, not an architectural choice — a paid instance has
+> no sleep at all.
 
 ### 3. Provision the voice agent
 
@@ -373,7 +377,7 @@ Two supporting tables: `calls` (transcript, summary, outcome, linked to the pati
 
 ## Observability
 
-One JSON object per line to stdout — the format Koyeb, Railway, Render and Fly all ingest natively.
+One JSON object per line to stdout — the format Render, Railway and Fly all ingest natively.
 Every request is logged with method, path, status and duration; every tool invocation with call id,
 tool name and outcome; and, as the brief requires, **the full collected payload** is logged on every
 successful registration, alongside the end-of-call transcript. The dashboard surfaces the same
@@ -389,9 +393,10 @@ transcripts per patient.
    or test. **If `DATABASE_URL` is unset in production the app falls back to a local file,
    which an ephemeral filesystem will erase on restart** — so `/health` names the active driver and
    sets `persistent: false` with an explicit warning rather than letting that pass silently.
-2. **The free instance sleeps.** Koyeb's free tier scales to zero after an hour idle, mitigated with
-   a cron ping (above). If that ping is ever removed, the first call after an idle hour eats a ~5s
-   cold start.
+2. **The free instance sleeps.** Render's free tier sleeps after 15 minutes idle, mitigated with a
+   cron ping (above). If that ping is ever removed, the next caller waits 30–60 seconds for a cold
+   start — long enough that the call fails rather than merely lags. This is the single most fragile
+   part of the deployment and the first thing a budget would fix.
 3. **Call state is in memory.** The map linking an in-flight call to the patient it created
    ([`call-state.js`](src/voice/call-state.js)) is lost on restart. Worst case, a transcript is
    archived without its patient link — no patient record is ever at risk.

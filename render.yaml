@@ -1,0 +1,39 @@
+# Render Blueprint — deploys this service from the repo in one click.
+#
+# Secrets use `sync: false`, which means Render prompts for the value at deploy
+# time and stores it in its own encrypted settings instead of ever committing it
+# to git.
+#
+# Note there is no disk declared, and none is needed: patient data lives in
+# Turso (hosted libSQL), so the container's filesystem is disposable. That is
+# what makes a free instance — which cannot mount a persistent disk — viable
+# without risking the data.
+services:
+  - type: web
+    name: voice-ai-patient-registration
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Turso connection. Without these the app falls back to a local SQLite
+      # file, which a free instance erases on every restart — /health reports
+      # `persistent: false` and warns loudly if that happens.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_AUTH_TOKEN
+        sync: false
+
+      # This service's own public https URL, e.g. https://<name>.onrender.com.
+      # Set it after the first deploy, once Render has assigned the address.
+      - key: PUBLIC_BASE_URL
+        sync: false
+
+      # Shared secret Vapi echoes back on every webhook. Must match the value
+      # used when the assistant was provisioned.
+      - key: VAPI_SERVER_SECRET
+        sync: false

@@ -19,7 +19,7 @@ COPY . .
 # Storage: set DATABASE_URL (libsql://… from Turso) and DATABASE_AUTH_TOKEN in
 # the environment and the hosted driver is used. Without them the app falls
 # back to a local SQLite file at DATABASE_PATH — fine for local Docker runs,
-# but NOT for a host with an ephemeral filesystem, where the file is erased on
+# but NOT for a host with an ephemeral filesystem (Render free, etc.), where the file is erased on
 # every restart.
 ENV DATABASE_PATH=/data/patients.sqlite
 RUN mkdir -p /data
