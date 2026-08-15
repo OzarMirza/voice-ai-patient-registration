@@ -39,17 +39,17 @@ export const patientsRouter = Router();
 
 patientsRouter.get(
   '/',
-  asyncRoute((req, res) => {
-    const { patients, pagination } = listPatients(req.query);
+  asyncRoute(async (req, res) => {
+    const { patients, pagination } = await listPatients(req.query);
     res.ok({ patients, pagination });
   }),
 );
 
 patientsRouter.get(
   '/:id',
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     assertUuid(req.params.id);
-    const patient = getPatientById(req.params.id);
+    const patient = await getPatientById(req.params.id);
     if (!patient) return res.fail(404, 'not_found', `No patient found with id ${req.params.id}`);
     return res.ok(patient);
   }),
@@ -58,25 +58,25 @@ patientsRouter.get(
 /** Related sub-resources — used by the dashboard detail drawer. */
 patientsRouter.get(
   '/:id/calls',
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     assertUuid(req.params.id);
-    res.ok({ calls: listCalls({ patientId: req.params.id }) });
+    res.ok({ calls: await listCalls({ patientId: req.params.id }) });
   }),
 );
 
 patientsRouter.get(
   '/:id/appointments',
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     assertUuid(req.params.id);
-    res.ok({ appointments: listAppointments(req.params.id) });
+    res.ok({ appointments: await listAppointments(req.params.id) });
   }),
 );
 
 patientsRouter.post(
   '/',
   requireApiKey,
-  asyncRoute((req, res) => {
-    const patient = createPatient(req.body);
+  asyncRoute(async (req, res) => {
+    const patient = await createPatient(req.body);
     res.set('Location', `/patients/${patient.patient_id}`);
     res.ok(patient, 201);
   }),
@@ -85,9 +85,9 @@ patientsRouter.post(
 patientsRouter.put(
   '/:id',
   requireApiKey,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     assertUuid(req.params.id);
-    res.ok(updatePatient(req.params.id, req.body));
+    res.ok(await updatePatient(req.params.id, req.body));
   }),
 );
 
@@ -96,18 +96,18 @@ patientsRouter.put(
 patientsRouter.patch(
   '/:id',
   requireApiKey,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     assertUuid(req.params.id);
-    res.ok(updatePatient(req.params.id, req.body));
+    res.ok(await updatePatient(req.params.id, req.body));
   }),
 );
 
 patientsRouter.delete(
   '/:id',
   requireApiKey,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     assertUuid(req.params.id);
-    const patient = softDeletePatient(req.params.id);
+    const patient = await softDeletePatient(req.params.id);
     res.ok({ patient_id: patient.patient_id, deleted_at: patient.deleted_at, soft_deleted: true });
   }),
 );

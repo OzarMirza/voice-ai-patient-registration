@@ -88,7 +88,7 @@ const callerNumber = (call) =>
 
 // ---------------------------------------------------------------------------
 
-vapiRouter.post('/webhook', (req, res) => {
+vapiRouter.post('/webhook', async (req, res) => {
   if (!verifySecret(req)) {
     logger.warn('rejected vapi webhook with bad secret', { ip: req.ip });
     return res.status(401).json({ error: 'invalid secret' });
@@ -111,10 +111,10 @@ vapiRouter.post('/webhook', (req, res) => {
           return res.json({ results: [] });
         }
 
-        const results = toolCalls.map(({ id, name, args }) => {
+        const results = await Promise.all(toolCalls.map(async ({ id, name, args }) => {
           let output;
           try {
-            output = invokeTool(name, args, { callId });
+            output = await invokeTool(name, args, { callId });
           } catch (err) {
             // A thrown handler must never become dead air.
             logger.error('tool handler threw', { tool: name, error: err.message });
@@ -137,7 +137,7 @@ vapiRouter.post('/webhook', (req, res) => {
           });
 
           return { name, toolCallId: id, result: JSON.stringify(output) };
-        });
+        }));
 
         // Legacy shape expects a bare `result`; sending both keys is harmless.
         return res.json(
@@ -154,7 +154,7 @@ vapiRouter.post('/webhook', (req, res) => {
       // returning patient to recite a number we already have.
       case 'assistant-request': {
         const phone = callerNumber(call);
-        const known = phone ? findPatientsByPhone(phone) : [];
+        const known = phone ? await findPatientsByPhone(phone) : [];
 
         rememberCall(callId, { callerPhone: phone });
 
@@ -177,7 +177,7 @@ vapiRouter.post('/webhook', (req, res) => {
         const state = recallCall(callId);
         const artifact = message.artifact ?? {};
 
-        upsertCall({
+        await upsertCall({
           providerCallId: callId,
           patientId: state?.patientId ?? null,
           callerPhone: state?.callerPhone ?? callerNumber(call),

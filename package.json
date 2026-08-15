@@ -15,6 +15,7 @@
     "provision:vapi": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/provision-vapi.js"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "express": "^4.21.2",
     "zod": "^3.24.1"
   },

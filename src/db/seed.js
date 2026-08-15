@@ -43,14 +43,14 @@ const SEEDS = [
 
 let created = 0;
 for (const seed of SEEDS) {
-  if (findPatientsByPhone(seed.phone_number).length > 0) {
+  if ((await findPatientsByPhone(seed.phone_number)).length > 0) {
     logger.info('seed skipped (already present)', { last_name: seed.last_name });
     continue;
   }
-  const patient = createPatient(seed);
+  const patient = await createPatient(seed);
   created += 1;
   logger.info('seed created', { patient_id: patient.patient_id, last_name: patient.last_name });
 }
 
 logger.info('seeding complete', { created });
-closeDb();
+await closeDb();

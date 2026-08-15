@@ -132,9 +132,9 @@ const lookupPatient = {
     },
   },
 
-  handler({ phone_number: phoneNumber }) {
+  async handler({ phone_number: phoneNumber }) {
     const digits = normalizePhone(phoneNumber);
-    const matches = findPatientsByPhone(digits);
+    const matches = await findPatientsByPhone(digits);
 
     if (matches.length === 0) {
       return {
@@ -199,7 +199,7 @@ const savePatient = {
     },
   },
 
-  handler(args, context = {}) {
+  async handler(args, context = {}) {
     const { confirmed, ...fields } = args ?? {};
     const parsed = createPatientSchema.safeParse(fields);
 
@@ -222,7 +222,7 @@ const savePatient = {
     const clean = { ...parsed.data, preferred_language: parsed.data.preferred_language ?? 'English' };
 
     if (!confirmed) {
-      const duplicates = findPatientsByPhone(clean.phone_number);
+      const duplicates = await findPatientsByPhone(clean.phone_number);
       return {
         ok: true,
         status: 'validated',
@@ -238,7 +238,7 @@ const savePatient = {
     }
 
     try {
-      const patient = createPatient(clean);
+      const patient = await createPatient(clean);
       logger.info('patient registered by voice agent', {
         call_id: context.callId,
         patient_id: patient.patient_id,
@@ -295,10 +295,10 @@ const updatePatientTool = {
     },
   },
 
-  handler(args, context = {}) {
+  async handler(args, context = {}) {
     const { patient_id: patientId, confirmed, ...fields } = args ?? {};
 
-    const existing = getPatientById(patientId, { includeDeleted: false });
+    const existing = await getPatientById(patientId, { includeDeleted: false });
     if (!existing) {
       return {
         ok: false,
@@ -345,7 +345,7 @@ const updatePatientTool = {
     }
 
     try {
-      const patient = updatePatient(patientId, parsed.data);
+      const patient = await updatePatient(patientId, parsed.data);
       logger.info('patient updated by voice agent', {
         call_id: context.callId,
         patient_id: patient.patient_id,
@@ -438,12 +438,12 @@ const scheduleAppointment = {
     },
   },
 
-  handler(args, context = {}) {
+  async handler(args, context = {}) {
     const { patient_id: patientId, day_preference, time_preference, reason } = args ?? {};
     const slot = nextSlot({ dayPreference: day_preference, timePreference: time_preference });
 
     try {
-      const appointment = createAppointment({
+      const appointment = await createAppointment({
         patientId,
         scheduledFor: slot.iso,
         reason: reason ?? 'New patient visit',
@@ -491,7 +491,7 @@ export function toolDefinitions(serverUrl, secret = null) {
 }
 
 /** Dispatch a tool call by name. Unknown names fail closed with guidance. */
-export function invokeTool(name, args, context = {}) {
+export async function invokeTool(name, args, context = {}) {
   const tool = TOOLS[name];
   if (!tool) {
     logger.warn('unknown tool requested', { name });

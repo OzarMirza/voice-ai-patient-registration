@@ -1,12 +1,15 @@
 /**
  * Patient service — the single source of truth for reading and writing
- * patient data.
+ * patient data, and the only module in the codebase that issues SQL.
  *
  * Both entry points go through here: the REST routes and the voice agent's
  * tool webhook. That is deliberate. The brief allows the agent to "use the
  * REST API or directly invoke the same service layer"; calling the service
  * in-process avoids an HTTP hop to ourselves (and its failure modes) while
  * guaranteeing the phone path and the API path apply identical validation.
+ *
+ * Every function here is async because storage may be local SQLite or a
+ * hosted libSQL database over the network — see `src/db/index.js`.
  */
 import crypto from 'node:crypto';
 import { getDb } from '../db/index.js';
@@ -41,13 +44,17 @@ const COLUMNS = [
   'emergency_contact_phone',
 ];
 
-/** node:sqlite only binds null/number/string/bigint/Uint8Array. */
+/** Drivers bind null/number/string/bigint/Uint8Array — never undefined. */
 const bind = (v) => (v === undefined ? null : v);
 
-function wrapSqliteError(err, action) {
+/** COUNT() can come back as a BigInt depending on the driver. */
+const count = (row) => Number(row?.n ?? 0);
+
+function wrapDbError(err, action) {
   if (String(err.message || '').includes('CHECK constraint failed')) {
-    // The schema rejected something Zod let through — treat as a validation
-    // problem rather than a 500 so the caller gets an actionable message.
+    // The schema rejected something Zod let through — surface it as a
+    // validation problem rather than a 500 so the caller gets an actionable
+    // message instead of "internal error".
     return new ValidationError('Record rejected by database constraints', [
       { field: '_root', message: err.message },
     ]);
@@ -56,7 +63,7 @@ function wrapSqliteError(err, action) {
   return new AppError(`Failed to ${action} patient`, { status: 500, code: 'database_error' });
 }
 
-export function createPatient(input) {
+export async function createPatient(input) {
   const parsed = createPatientSchema.safeParse(input ?? {});
   if (!parsed.success) throw new ValidationError('Validation failed', formatZodError(parsed.error));
 
@@ -69,30 +76,31 @@ export function createPatient(input) {
     preferred_language: data.preferred_language ?? 'English',
   };
 
+  const db = await getDb();
   try {
-    getDb()
-      .prepare(
-        `INSERT INTO patients (patient_id, ${COLUMNS.join(', ')}, created_at, updated_at)
-         VALUES (?, ${COLUMNS.map(() => '?').join(', ')}, ?, ?)`,
-      )
-      .run(patientId, ...COLUMNS.map((c) => values[c]), ts, ts);
+    await db.run(
+      `INSERT INTO patients (patient_id, ${COLUMNS.join(', ')}, created_at, updated_at)
+       VALUES (?, ${COLUMNS.map(() => '?').join(', ')}, ?, ?)`,
+      [patientId, ...COLUMNS.map((c) => values[c]), ts, ts],
+    );
   } catch (err) {
-    throw wrapSqliteError(err, 'create');
+    throw wrapDbError(err, 'create');
   }
 
   logger.info('patient created', { patient_id: patientId, last_name: data.last_name });
   return getPatientById(patientId);
 }
 
-export function getPatientById(patientId, { includeDeleted = true } = {}) {
+export async function getPatientById(patientId, { includeDeleted = true } = {}) {
   if (!patientId || typeof patientId !== 'string') return null;
+  const db = await getDb();
   const sql = includeDeleted
     ? 'SELECT * FROM patients WHERE patient_id = ?'
     : 'SELECT * FROM patients WHERE patient_id = ? AND deleted_at IS NULL';
-  return serializePatient(getDb().prepare(sql).get(patientId));
+  return serializePatient(await db.get(sql, [patientId]));
 }
 
-export function listPatients(rawQuery = {}) {
+export async function listPatients(rawQuery = {}) {
   const parsed = listQuerySchema.safeParse(rawQuery);
   if (!parsed.success) throw new ValidationError('Invalid query parameters', formatZodError(parsed.error));
   const q = parsed.data;
@@ -122,12 +130,13 @@ export function listPatients(rawQuery = {}) {
   }
 
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const db = getDb();
+  const db = await getDb();
 
-  const total = db.prepare(`SELECT COUNT(*) AS n FROM patients ${clause}`).get(...params).n;
-  const rows = db
-    .prepare(`SELECT * FROM patients ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .all(...params, q.limit, q.offset);
+  const total = count(await db.get(`SELECT COUNT(*) AS n FROM patients ${clause}`, params));
+  const rows = await db.all(
+    `SELECT * FROM patients ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    [...params, q.limit, q.offset],
+  );
 
   return {
     patients: rows.map(serializePatient),
@@ -135,8 +144,8 @@ export function listPatients(rawQuery = {}) {
   };
 }
 
-export function updatePatient(patientId, input) {
-  const existing = getPatientById(patientId);
+export async function updatePatient(patientId, input) {
+  const existing = await getPatientById(patientId);
   if (!existing) throw new NotFoundError(`No patient found with id ${patientId}`);
   if (existing.deleted_at) {
     throw new AppError('Cannot update a deleted patient record', {
@@ -156,15 +165,15 @@ export function updatePatient(patientId, input) {
     ]);
   }
 
+  const db = await getDb();
   try {
-    getDb()
-      .prepare(
-        `UPDATE patients SET ${updates.map((c) => `${c} = ?`).join(', ')}, updated_at = ?
-         WHERE patient_id = ?`,
-      )
-      .run(...updates.map((c) => bind(data[c])), nowIso(), patientId);
+    await db.run(
+      `UPDATE patients SET ${updates.map((c) => `${c} = ?`).join(', ')}, updated_at = ?
+       WHERE patient_id = ?`,
+      [...updates.map((c) => bind(data[c])), nowIso(), patientId],
+    );
   } catch (err) {
-    throw wrapSqliteError(err, 'update');
+    throw wrapDbError(err, 'update');
   }
 
   logger.info('patient updated', { patient_id: patientId, fields: updates });
@@ -172,15 +181,18 @@ export function updatePatient(patientId, input) {
 }
 
 /** Soft delete — sets deleted_at, never removes the row. Idempotent. */
-export function softDeletePatient(patientId) {
-  const existing = getPatientById(patientId);
+export async function softDeletePatient(patientId) {
+  const existing = await getPatientById(patientId);
   if (!existing) throw new NotFoundError(`No patient found with id ${patientId}`);
   if (existing.deleted_at) return existing;
 
   const ts = nowIso();
-  getDb()
-    .prepare('UPDATE patients SET deleted_at = ?, updated_at = ? WHERE patient_id = ?')
-    .run(ts, ts, patientId);
+  const db = await getDb();
+  await db.run('UPDATE patients SET deleted_at = ?, updated_at = ? WHERE patient_id = ?', [
+    ts,
+    ts,
+    patientId,
+  ]);
 
   logger.info('patient soft-deleted', { patient_id: patientId });
   return getPatientById(patientId);
@@ -190,23 +202,23 @@ export function softDeletePatient(patientId) {
  * Duplicate detection for returning callers. Matches on normalized digits so
  * caller ID (+15551234567) finds a record saved as 5551234567.
  */
-export function findPatientsByPhone(phoneDigits) {
+export async function findPatientsByPhone(phoneDigits) {
   if (!phoneDigits) return [];
-  return getDb()
-    .prepare(
-      `SELECT * FROM patients
-       WHERE phone_number = ? AND deleted_at IS NULL
-       ORDER BY updated_at DESC`,
-    )
-    .all(phoneDigits)
-    .map(serializePatient);
+  const db = await getDb();
+  const rows = await db.all(
+    `SELECT * FROM patients
+     WHERE phone_number = ? AND deleted_at IS NULL
+     ORDER BY updated_at DESC`,
+    [phoneDigits],
+  );
+  return rows.map(serializePatient);
 }
 
 // ---------------------------------------------------------------------------
 // Calls (bonus: transcript archive)
 // ---------------------------------------------------------------------------
 
-export function upsertCall({
+export async function upsertCall({
   providerCallId,
   patientId = null,
   callerPhone = null,
@@ -217,15 +229,15 @@ export function upsertCall({
   transcript = null,
   collectedPayload = null,
 }) {
-  const db = getDb();
+  const db = await getDb();
   const existing = providerCallId
-    ? db.prepare('SELECT call_id FROM calls WHERE provider_call_id = ?').get(providerCallId)
+    ? await db.get('SELECT call_id FROM calls WHERE provider_call_id = ?', [providerCallId])
     : null;
 
   const payload = collectedPayload ? JSON.stringify(collectedPayload) : null;
 
   if (existing) {
-    db.prepare(
+    await db.run(
       `UPDATE calls SET patient_id = COALESCE(?, patient_id),
                         caller_phone = COALESCE(?, caller_phone),
                         outcome = ?,
@@ -235,32 +247,35 @@ export function upsertCall({
                         transcript = COALESCE(?, transcript),
                         collected_payload = COALESCE(?, collected_payload)
        WHERE call_id = ?`,
-    ).run(
-      bind(patientId), bind(callerPhone), outcome, bind(endedReason),
-      bind(durationSeconds), bind(summary), bind(transcript), bind(payload), existing.call_id,
+      [
+        bind(patientId), bind(callerPhone), outcome, bind(endedReason),
+        bind(durationSeconds), bind(summary), bind(transcript), bind(payload), existing.call_id,
+      ],
     );
     return existing.call_id;
   }
 
   const callId = crypto.randomUUID();
-  db.prepare(
+  await db.run(
     `INSERT INTO calls (call_id, provider_call_id, patient_id, caller_phone, outcome,
                         ended_reason, duration_seconds, summary, transcript, collected_payload)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    callId, bind(providerCallId), bind(patientId), bind(callerPhone), outcome,
-    bind(endedReason), bind(durationSeconds), bind(summary), bind(transcript), bind(payload),
+    [
+      callId, bind(providerCallId), bind(patientId), bind(callerPhone), outcome,
+      bind(endedReason), bind(durationSeconds), bind(summary), bind(transcript), bind(payload),
+    ],
   );
   return callId;
 }
 
-export function listCalls({ patientId = null, limit = 50 } = {}) {
-  const db = getDb();
+export async function listCalls({ patientId = null, limit = 50 } = {}) {
+  const db = await getDb();
   const rows = patientId
-    ? db
-        .prepare('SELECT * FROM calls WHERE patient_id = ? ORDER BY created_at DESC LIMIT ?')
-        .all(patientId, limit)
-    : db.prepare('SELECT * FROM calls ORDER BY created_at DESC LIMIT ?').all(limit);
+    ? await db.all('SELECT * FROM calls WHERE patient_id = ? ORDER BY created_at DESC LIMIT ?', [
+        patientId,
+        limit,
+      ])
+    : await db.all('SELECT * FROM calls ORDER BY created_at DESC LIMIT ?', [limit]);
 
   return rows.map((row) => ({
     ...row,
@@ -272,39 +287,47 @@ export function listCalls({ patientId = null, limit = 50 } = {}) {
 // Appointments (bonus: mock scheduling)
 // ---------------------------------------------------------------------------
 
-export function createAppointment({ patientId, scheduledFor, reason = null }) {
-  const patient = getPatientById(patientId, { includeDeleted: false });
+export async function createAppointment({ patientId, scheduledFor, reason = null }) {
+  const patient = await getPatientById(patientId, { includeDeleted: false });
   if (!patient) throw new NotFoundError(`No patient found with id ${patientId}`);
 
   const appointmentId = crypto.randomUUID();
-  getDb()
-    .prepare(
-      'INSERT INTO appointments (appointment_id, patient_id, scheduled_for, reason) VALUES (?, ?, ?, ?)',
-    )
-    .run(appointmentId, patientId, scheduledFor, bind(reason));
+  const db = await getDb();
+  await db.run(
+    'INSERT INTO appointments (appointment_id, patient_id, scheduled_for, reason) VALUES (?, ?, ?, ?)',
+    [appointmentId, patientId, scheduledFor, bind(reason)],
+  );
 
   logger.info('appointment created', { appointment_id: appointmentId, patient_id: patientId });
-  return getDb()
-    .prepare('SELECT * FROM appointments WHERE appointment_id = ?')
-    .get(appointmentId);
+  return db.get('SELECT * FROM appointments WHERE appointment_id = ?', [appointmentId]);
 }
 
-export function listAppointments(patientId) {
-  return getDb()
-    .prepare('SELECT * FROM appointments WHERE patient_id = ? ORDER BY scheduled_for ASC')
-    .all(patientId);
+export async function listAppointments(patientId) {
+  const db = await getDb();
+  return db.all('SELECT * FROM appointments WHERE patient_id = ? ORDER BY scheduled_for ASC', [
+    patientId,
+  ]);
 }
 
 /** Counters for the dashboard header. */
-export function getStats() {
-  const db = getDb();
+export async function getStats() {
+  const db = await getDb();
+  const [active, deleted, today, calls, appointments] = await Promise.all([
+    db.get('SELECT COUNT(*) AS n FROM patients WHERE deleted_at IS NULL'),
+    db.get('SELECT COUNT(*) AS n FROM patients WHERE deleted_at IS NOT NULL'),
+    db.get(
+      'SELECT COUNT(*) AS n FROM patients WHERE deleted_at IS NULL AND substr(created_at, 1, 10) = ?',
+      [new Date().toISOString().slice(0, 10)],
+    ),
+    db.get('SELECT COUNT(*) AS n FROM calls'),
+    db.get("SELECT COUNT(*) AS n FROM appointments WHERE status = 'scheduled'"),
+  ]);
+
   return {
-    patients_active: db.prepare('SELECT COUNT(*) AS n FROM patients WHERE deleted_at IS NULL').get().n,
-    patients_deleted: db.prepare('SELECT COUNT(*) AS n FROM patients WHERE deleted_at IS NOT NULL').get().n,
-    registered_today: db
-      .prepare("SELECT COUNT(*) AS n FROM patients WHERE deleted_at IS NULL AND substr(created_at, 1, 10) = ?")
-      .get(new Date().toISOString().slice(0, 10)).n,
-    calls_logged: db.prepare('SELECT COUNT(*) AS n FROM calls').get().n,
-    appointments: db.prepare("SELECT COUNT(*) AS n FROM appointments WHERE status = 'scheduled'").get().n,
+    patients_active: count(active),
+    patients_deleted: count(deleted),
+    registered_today: count(today),
+    calls_logged: count(calls),
+    appointments: count(appointments),
   };
 }

@@ -8,9 +8,9 @@ conversation, persists the record to a database, and exposes it over a REST API 
 > | | |
 > |---|---|
 > | 📞 **Phone number** | `+1 (XXX) XXX-XXXX` |
-> | 🌐 **API base URL** | `https://<your-app>.up.railway.app` |
-> | 📊 **Dashboard** | `https://<your-app>.up.railway.app/dashboard` |
-> | ❤️ **Health check** | `https://<your-app>.up.railway.app/health` |
+> | 🌐 **API base URL** | `https://<your-app>.koyeb.app` |
+> | 📊 **Dashboard** | `https://<your-app>.koyeb.app/dashboard` |
+> | ❤️ **Health check** | `https://<your-app>.koyeb.app/health` |
 >
 > No credentials are required to test the API — `GET`, `POST`, `PUT` and `DELETE` are all open
 > for review. (An `API_KEY` gate is implemented and can be switched on with one env var; see
@@ -71,11 +71,14 @@ your record instead of creating a duplicate.
    │            src/domain/  (validation + service layer)                  │
    │            ├─ normalize.js       speech-tolerant input cleaning        │
    │            ├─ patient.schema.js  Zod rules, one set for all callers    │
-   │            └─ patient.service.js the only code that touches the DB     │
+   │            └─ patient.service.js the only code that issues SQL         │
    │                         │                                             │
+   │            src/db/  one async interface, two drivers                  │
+   │            ├─ drivers/local.js   node:sqlite   (dev + tests)          │
+   │            └─ drivers/turso.js   libSQL/HTTP   (production)           │
    └─────────────────────────┼─────────────────────────────────────────────┘
                              ▼
-                   SQLite (persistent volume)
+                   SQLite / libSQL
                    patients · calls · appointments
 ```
 
@@ -89,6 +92,13 @@ the REST API *or* invoke the same service directly; this build does the latter. 
 by phone and one created by `curl` go through byte-identical validation, and a live call never
 depends on the service being able to make an HTTP request to itself.
 
+**Storage sits behind a two-driver adapter.** `patient.service.js` is the only module that issues
+SQL, and it talks to one small async interface. Locally that resolves to Node's built-in
+`node:sqlite` — a real file, no accounts, no setup, fast tests. In production it resolves to Turso
+(hosted libSQL). Both *are* SQLite, so `schema.sql` and every query are shared verbatim; only the
+transport differs. Swapping the two required no changes to the routes, the voice tools, or a single
+one of the 48 tests.
+
 ---
 
 ## Tech stack, and why
@@ -99,12 +109,12 @@ depends on the service being able to make an HTTP request to itself.
 | LLM | **Claude Sonnet 5** (via Vapi's built-in Anthropic integration) | Strong instruction-following on multi-step tool protocols — it reliably honours the two-phase save described below. Swappable with two env vars. |
 | STT | **Deepgram nova-3, `language: multi`** | Mid-call code-switching is what makes the Spanish bonus work without the caller starting over. |
 | Runtime | **Node 24 + Express** | Fast to write, and Express keeps the HTTP layer legible for a reviewer. |
-| Database | **SQLite** via Node's built-in `node:sqlite` | The brief blesses SQLite explicitly. Using the *built-in* module means **zero native dependencies** — nothing to compile in Docker, nothing to break on a Node upgrade. Persistence comes from a mounted volume. |
+| Database | **SQLite** — `node:sqlite` locally, **Turso** (hosted libSQL) in production | The brief blesses SQLite explicitly. Free hosting tiers have ephemeral filesystems, so production storage has to live off-box; Turso is SQLite with a network protocol, so the schema and queries are unchanged. `@libsql/client/web` is pure JavaScript over `fetch` and `node:sqlite` is built in, so the project has **zero native dependencies** — nothing compiles in the Docker image, nothing breaks on a Node upgrade. |
 | Validation | **Zod** | One schema drives the API, the voice tools and the error messages read aloud to the caller. |
 | Dashboard | **Vanilla HTML/CSS/JS** | No build step, no CDN, cannot break because a third-party script went down. |
 | Tests | **`node:test`** | Built in; no test-framework dependency. |
 
-Total production dependencies: **two** (`express`, `zod`).
+Total production dependencies: **three** (`express`, `zod`, `@libsql/client`) — none of them native.
 
 ---
 
@@ -184,6 +194,10 @@ npm start        # http://localhost:3000
 
 Then open <http://localhost:3000/dashboard>.
 
+No database setup is needed locally. With `DATABASE_URL` unset the app uses a local SQLite file at
+`./data/patients.sqlite` through Node's built-in driver — no account, no container, no migration
+step. Set `DATABASE_URL` and it switches to Turso; nothing else changes.
+
 Run the tests:
 
 ```bash
@@ -198,28 +212,44 @@ shapes.
 
 ## Deployment
 
-### 1. Deploy the service (Railway)
+Deployed on free infrastructure: **Koyeb** for compute, **Turso** for storage. Compute and storage
+are separated deliberately — free tiers give you an ephemeral filesystem, so the database cannot
+live next to the app.
+
+### 1. Create the database (Turso)
 
 ```bash
-railway init && railway up
+turso db create patient-registry
+turso db show patient-registry --url        # -> DATABASE_URL
+turso db tokens create patient-registry     # -> DATABASE_AUTH_TOKEN
 ```
 
-Then, in the Railway dashboard:
+Free plan: 5 GB, no credit card, no expiry. The schema is applied automatically on first boot —
+`schema.sql` is written entirely with `IF NOT EXISTS`, so startup doubles as the migration.
 
-1. **Add a volume** mounted at `/data`. *This is required* — without it the SQLite file lives on the
-   ephemeral container filesystem and registrations are lost on redeploy.
-2. Set variables:
+### 2. Deploy the service (Koyeb)
 
-   ```
-   DATABASE_PATH=/data/patients.sqlite
-   PUBLIC_BASE_URL=https://<your-app>.up.railway.app
-   VAPI_API_KEY=<from Vapi → Settings → API Keys>
-   VAPI_SERVER_SECRET=<openssl rand -hex 32>
-   ```
+Create a Web Service from this GitHub repo, Dockerfile builder, **Free** instance type, health
+check path `/health`. Set the environment variables:
 
-3. Confirm `GET /health` returns `"status": "healthy"`.
+```
+DATABASE_URL=libsql://patient-registry-<org>.turso.io
+DATABASE_AUTH_TOKEN=<token from above>
+PUBLIC_BASE_URL=https://<your-app>-<org>.koyeb.app
+VAPI_API_KEY=<from Vapi → Settings → API Keys>
+VAPI_SERVER_SECRET=<openssl rand -hex 32>
+```
 
-### 2. Provision the voice agent
+Koyeb injects `PORT` itself. Confirm `GET /health` returns `"status": "healthy"` and
+`"database": "ok"` — that endpoint runs a real query, so it fails loudly if the Turso credentials
+are wrong rather than reporting healthy until the first phone call.
+
+> **Keepalive.** Koyeb's free instance scales to zero after 1 hour with no traffic, and the cold
+> start (~5s) would land inside a caller's first turn. A free cron ping to `/health` every 15
+> minutes (cron-job.org, UptimeRobot) prevents it from ever sleeping. This is a free-tier
+> workaround, not an architectural choice — a paid instance would simply disable scale-to-zero.
+
+### 3. Provision the voice agent
 
 Buy a US number in the Vapi dashboard (**Phone Numbers → Buy Number**), then:
 
@@ -340,7 +370,7 @@ Two supporting tables: `calls` (transcript, summary, outcome, linked to the pati
 
 ## Observability
 
-One JSON object per line to stdout — the format Railway, Render and Fly all ingest natively.
+One JSON object per line to stdout — the format Koyeb, Railway, Render and Fly all ingest natively.
 Every request is logged with method, path, status and duration; every tool invocation with call id,
 tool name and outcome; and, as the brief requires, **the full collected payload** is logged on every
 successful registration, alongside the end-of-call transcript. The dashboard surfaces the same
@@ -350,22 +380,26 @@ transcripts per patient.
 
 ## Known limitations and trade-offs
 
-1. **SQLite on a single volume.** Correct for this scale and explicitly sanctioned by the brief, but
-   it does not survive multi-instance horizontal scaling. The service layer is the only code that
-   touches the database, so moving to Postgres is a contained change. **If the Railway volume is not
-   mounted at `/data`, data will not persist across redeploys.**
-2. **Call state is in memory.** The map linking an in-flight call to the patient it created
+1. **SQLite/libSQL rather than Postgres.** Correct for this scale and explicitly sanctioned by the
+   brief. The service layer is the only code that issues SQL, so moving to Postgres would be a
+   contained change — the Turso swap already exercised exactly that seam and touched no route, tool
+   or test. **If `DATABASE_URL` is unset in production the app silently falls back to a local file,
+   which an ephemeral filesystem will erase on restart;** `/health` reports which driver is live.
+2. **The free instance sleeps.** Koyeb's free tier scales to zero after an hour idle, mitigated with
+   a cron ping (above). If that ping is ever removed, the first call after an idle hour eats a ~5s
+   cold start.
+3. **Call state is in memory.** The map linking an in-flight call to the patient it created
    ([`call-state.js`](src/voice/call-state.js)) is lost on restart. Worst case, a transcript is
    archived without its patient link — no patient record is ever at risk.
-3. **Appointment scheduling is mocked.** It returns the next matching weekday slot rather than
+4. **Appointment scheduling is mocked.** It returns the next matching weekday slot rather than
    consulting real availability.
-4. **Duplicate detection is phone-only.** Two people sharing a number are surfaced to the agent to
+5. **Duplicate detection is phone-only.** Two people sharing a number are surfaced to the agent to
    disambiguate, but there is no fuzzy name+DOB matching.
-5. **No auth on the dashboard.** It is a read-only demo surface. Real deployment needs SSO and audit
+6. **No auth on the dashboard.** It is a read-only demo surface. Real deployment needs SSO and audit
    logging.
-6. **Rate limiting is per-instance and in-memory.** Fine for one container; a real deployment would
+7. **Rate limiting is per-instance and in-memory.** Fine for one container; a real deployment would
    use a shared store.
-7. **English and Spanish are what I actually tested.** The transcriber is configured for automatic
+8. **English and Spanish are what I actually tested.** The transcriber is configured for automatic
    multilingual detection, so other languages should work, but I haven't verified them.
 
 ## Next steps
@@ -389,7 +423,9 @@ src/
 ├── app.js / index.js         express wiring, listener, graceful shutdown
 ├── db/
 │   ├── schema.sql            DDL with CHECK constraints
-│   ├── index.js              node:sqlite connection, WAL, migrations
+│   ├── index.js              driver selection, one async interface
+│   ├── drivers/local.js      node:sqlite  (dev + tests)
+│   ├── drivers/turso.js      libSQL/HTTP  (production)
 │   └── seed.js               two demo patients
 ├── domain/
 │   ├── normalize.js          speech-tolerant input cleaning

@@ -12,10 +12,18 @@ export const config = {
   port: Number(process.env.PORT || 3000),
 
   /**
-   * SQLite file location. On Railway this points at a mounted volume
-   * (e.g. /data/patients.sqlite) so records survive redeploys and restarts —
-   * the assessment explicitly checks that Call 1's data exists on Call 2.
+   * Storage selection.
+   *
+   * If DATABASE_URL is set (libsql://… from Turso), the hosted driver is used.
+   * Otherwise the app falls back to a local SQLite file — which is what
+   * development and the test suite run against, with no account needed.
+   *
+   * Production uses Turso because free hosting tiers have ephemeral
+   * filesystems: a local file would be wiped on every restart, and the
+   * assessment checks that a patient registered on call 1 exists on call 2.
    */
+  databaseUrl: process.env.DATABASE_URL || null,
+  databaseAuthToken: process.env.DATABASE_AUTH_TOKEN || null,
   databasePath: process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'patients.sqlite'),
 
   /**

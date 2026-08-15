@@ -1,62 +1,74 @@
 /**
- * SQLite connection.
+ * Database access.
  *
- * Uses Node's built-in `node:sqlite` (Node >= 22.5) rather than better-sqlite3
- * so the project has zero native dependencies — nothing to compile in the
- * Docker image, nothing to break on a platform's Node upgrade.
+ * One async interface, two interchangeable drivers:
+ *
+ *   - `node:sqlite`  — local file, used for development and tests
+ *   - Turso (libSQL) — hosted SQLite, used in production
+ *
+ * Selection is by configuration alone (`DATABASE_URL` present => Turso), so
+ * nothing above this file knows or cares which is active. Both are SQLite, so
+ * `schema.sql` and every query are shared verbatim.
  */
-import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { logger } from '../lib/logger.js';
+import { createLocalDriver } from './drivers/local.js';
+import { createTursoDriver } from './drivers/turso.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-let db = null;
+let initPromise = null;
 
-export function getDb() {
-  if (db) return db;
+async function initialize() {
+  const driver = config.databaseUrl
+    ? createTursoDriver({ url: config.databaseUrl, authToken: config.databaseAuthToken })
+    : createLocalDriver(config.databasePath);
 
-  const dbPath = config.databasePath;
-  if (dbPath !== ':memory:') {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  }
-
-  db = new DatabaseSync(dbPath);
-
-  // WAL keeps reads (dashboard, REST API) from blocking the writes that happen
-  // mid-call. `busy_timeout` means a concurrent write waits rather than
-  // throwing SQLITE_BUSY at a caller who is on the phone.
-  if (dbPath !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
-  db.exec('PRAGMA busy_timeout = 5000;');
-
+  // Idempotent: schema.sql is written entirely with CREATE TABLE/INDEX IF NOT
+  // EXISTS, so this runs safely on every boot and doubles as the migration.
   const schema = fs.readFileSync(path.join(here, 'schema.sql'), 'utf8');
-  db.exec(schema);
+  await driver.executeMultiple(schema);
 
-  logger.info('database ready', { path: dbPath });
-  return db;
+  logger.info('database ready', { driver: driver.name, target: driver.description });
+
+  return {
+    driver,
+
+    /** All matching rows. */
+    async all(sql, args = []) {
+      const { rows } = await driver.execute({ sql, args });
+      return rows;
+    },
+
+    /** First matching row, or null. */
+    async get(sql, args = []) {
+      const { rows } = await driver.execute({ sql, args });
+      return rows[0] ?? null;
+    },
+
+    /** A write. Returns the number of affected rows. */
+    async run(sql, args = []) {
+      const { rowsAffected } = await driver.execute({ sql, args });
+      return rowsAffected;
+    },
+  };
 }
 
-export function closeDb() {
-  if (db) {
-    db.close();
-    db = null;
-  }
+/**
+ * Memoized on the promise, not the result, so concurrent callers during
+ * startup share a single initialization instead of racing to create schemas.
+ */
+export function getDb() {
+  if (!initPromise) initPromise = initialize();
+  return initPromise;
 }
 
-/** Run a set of statements atomically. */
-export function transaction(fn) {
-  const conn = getDb();
-  conn.exec('BEGIN');
-  try {
-    const result = fn(conn);
-    conn.exec('COMMIT');
-    return result;
-  } catch (err) {
-    conn.exec('ROLLBACK');
-    throw err;
-  }
+export async function closeDb() {
+  if (!initPromise) return;
+  const db = await initPromise;
+  await db.driver.close();
+  initPromise = null;
 }

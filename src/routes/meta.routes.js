@@ -7,11 +7,13 @@ import { config } from '../config.js';
 
 export const metaRouter = Router();
 
-metaRouter.get('/health', (req, res) => {
-  // Touch the database so the check fails loudly if the volume is unmounted.
+metaRouter.get('/health', async (req, res) => {
+  // Touch the database so the check fails loudly if the connection is broken
+  // rather than reporting healthy right up until the first phone call.
   let database = 'ok';
   try {
-    getDb().prepare('SELECT 1 AS ok').get();
+    const db = await getDb();
+    await db.get('SELECT 1 AS ok');
   } catch (err) {
     database = `error: ${err.message}`;
   }
@@ -32,10 +34,10 @@ metaRouter.get('/health', (req, res) => {
 
 metaRouter.get(
   '/stats',
-  asyncRoute((req, res) => res.ok(getStats())),
+  asyncRoute(async (req, res) => res.ok(await getStats())),
 );
 
 metaRouter.get(
   '/calls',
-  asyncRoute((req, res) => res.ok({ calls: listCalls({ limit: 100 }) })),
+  asyncRoute(async (req, res) => res.ok({ calls: await listCalls({ limit: 100 }) })),
 );

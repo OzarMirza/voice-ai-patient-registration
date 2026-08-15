@@ -1,7 +1,6 @@
-# Node 24 pinned explicitly: the app uses the built-in `node:sqlite` module,
-# which needs >= 22.5. Pinning removes any dependence on the platform's default
-# Node version. slim keeps the image small; there is nothing to compile because
-# the project has no native dependencies.
+# Node 24 pinned explicitly: the local database driver uses the built-in
+# `node:sqlite` module, which needs >= 22.5. Pinning removes any dependence on
+# the host platform's default Node version.
 FROM node:24-slim
 
 ENV NODE_ENV=production
@@ -9,16 +8,23 @@ WORKDIR /app
 
 # Copy manifests first so `npm ci` is cached across code-only changes.
 COPY package*.json ./
-RUN npm ci --omit=dev
+
+# --omit=optional skips the libSQL native binaries. Production talks to Turso
+# through `@libsql/client/web`, which is pure JavaScript over fetch, so nothing
+# in this image compiles or links against a native module.
+RUN npm ci --omit=dev --omit=optional
 
 COPY . .
 
-# Default DB location. On Railway/Render, mount a persistent volume at /data
-# so registrations survive redeploys — the assessment checks that a patient
-# registered on call 1 is still there on call 2.
+# Storage: set DATABASE_URL (libsql://… from Turso) and DATABASE_AUTH_TOKEN in
+# the environment and the hosted driver is used. Without them the app falls
+# back to a local SQLite file at DATABASE_PATH — fine for local Docker runs,
+# but NOT for a host with an ephemeral filesystem, where the file is erased on
+# every restart.
 ENV DATABASE_PATH=/data/patients.sqlite
 RUN mkdir -p /data
 
+# Hosts inject their own PORT; this is only the local default.
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
