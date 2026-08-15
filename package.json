@@ -1,0 +1,22 @@
+{
+  "name": "voice-ai-patient-registration",
+  "version": "1.0.0",
+  "description": "Voice AI agent that registers patients over the phone, persists them to SQLite, and exposes them via a REST API.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --watch src/index.js",
+    "seed": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/db/seed.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"tests/**/*.test.js\"",
+    "provision:vapi": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/provision-vapi.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "zod": "^3.24.1"
+  },
+  "license": "MIT"
+}

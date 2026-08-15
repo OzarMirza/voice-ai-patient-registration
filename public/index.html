@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Patient Registry — Riverside Family Health</title>
+<style>
+  /* Single-file, dependency-free dashboard. No build step, no CDN — it works
+     offline and cannot break because a third-party script went down. */
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e3e6ea;
+    --text: #12161c;
+    --muted: #667085;
+    --accent: #1f6feb;
+    --accent-soft: #e8f0fe;
+    --ok: #17803d;
+    --ok-soft: #e6f4ea;
+    --warn: #b45309;
+    --danger: #b42318;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #262c36; --text: #e6edf3;
+      --muted: #8b949e; --accent: #4493f8; --accent-soft: #14263f;
+      --ok: #3fb950; --ok-soft: #12261a; --warn: #d29922; --danger: #f85149;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 18px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
+  .dot.bad { background: var(--danger); }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .stat b { display: block; font-size: 26px; font-weight: 640; letter-spacing: -.02em; }
+  .stat span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  input[type=search], select {
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text); font-size: 14px; font-family: inherit;
+  }
+  input[type=search] { flex: 1; min-width: 220px; }
+  input[type=search]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  button {
+    padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+    background: var(--panel); color: var(--text); font-size: 14px; font-family: inherit;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; padding: 11px 16px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  td { padding: 13px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--accent-soft); }
+  .name { font-weight: 580; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .mono { font-variant-numeric: tabular-nums; }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11.5px;
+    font-weight: 560; background: var(--ok-soft); color: var(--ok);
+  }
+  .pill.gray { background: var(--border); color: var(--muted); }
+  .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
+  .table-scroll { overflow-x: auto; }
+
+  /* Detail drawer */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(8, 12, 20, .45);
+    display: none; z-index: 40;
+  }
+  .overlay.open { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%);
+    background: var(--panel); border-left: 1px solid var(--border); z-index: 50;
+    transform: translateX(100%); transition: transform .18s ease-out;
+    overflow-y: auto; padding: 22px 24px 40px;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer h2 { margin: 0 0 2px; font-size: 20px; letter-spacing: -.02em; }
+  .drawer .close { position: absolute; top: 16px; right: 18px; }
+  dl { display: grid; grid-template-columns: 150px 1fr; gap: 9px 14px; margin: 20px 0; font-size: 14px; }
+  dt { color: var(--muted); font-size: 13px; }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  h3.section { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 24px 0 8px; }
+  .transcript {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+    max-height: 260px; overflow-y: auto;
+  }
+  footer { text-align: center; color: var(--muted); font-size: 12.5px; padding: 28px 0 12px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Patient Registry</h1>
+  <span class="sub">Riverside Family Health &middot; voice intake</span>
+  <span style="margin-left:auto" class="sub"><span class="dot" id="health-dot"></span> <span id="health-text">checking…</span></span>
+</header>
+
+<main>
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="Search by last name, or paste a phone number…" autocomplete="off" />
+    <select id="scope">
+      <option value="active">Active only</option>
+      <option value="all">Include deleted</option>
+    </select>
+    <button id="refresh">Refresh</button>
+  </div>
+
+  <div class="card">
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Patient</th><th>DOB</th><th>Age</th><th>Sex</th>
+            <th>Phone</th><th>Location</th><th>Registered</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="empty" hidden>No patients match that search.</div>
+  </div>
+
+  <footer>
+    Data served live from <a href="/patients">GET /patients</a> &middot;
+    <a href="/health">health</a> &middot; <a href="/stats">stats</a>
+  </footer>
+</main>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dash = (v) => (v === null || v === undefined || v === '' ? '<span class="muted">—</span>' : esc(v));
+
+async function api(path) {
+  const res = await fetch(path);
+  const body = await res.json();
+  if (body.error) throw new Error(body.error.message);
+  return body.data;
+}
+
+const shortDate = (iso) =>
+  iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const dateTime = (iso) => (iso ? new Date(iso).toLocaleString() : '');
+
+let patients = [];
+
+async function loadHealth() {
+  try {
+    const h = await api('/health');
+    $('health-dot').className = 'dot' + (h.status === 'healthy' ? '' : ' bad');
+    $('health-text').textContent =
+      h.status + (h.voice_agent_configured ? ' · voice agent configured' : '');
+  } catch {
+    $('health-dot').className = 'dot bad';
+    $('health-text').textContent = 'API unreachable';
+  }
+}
+
+async function loadStats() {
+  try {
+    const s = await api('/stats');
+    $('stats').innerHTML = [
+      ['Active patients', s.patients_active],
+      ['Registered today', s.registered_today],
+      ['Calls logged', s.calls_logged],
+      ['Upcoming appts', s.appointments],
+      ['Soft-deleted', s.patients_deleted],
+    ].map(([label, n]) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`).join('');
+  } catch { /* stats are decorative; never block the table */ }
+}
+
+async function loadPatients() {
+  const q = $('q').value.trim();
+  const params = new URLSearchParams({ limit: '200' });
+  if ($('scope').value === 'all') params.set('include_deleted', 'true');
+
+  // A search that looks like a phone number filters on phone; otherwise name.
+  if (q) {
+    const digits = q.replace(/\D/g, '');
+    if (digits.length >= 10) params.set('phone_number', digits);
+    else params.set('last_name', q);
+  }
+
+  try {
+    const data = await api('/patients?' + params);
+    patients = data.patients;
+    render();
+  } catch (err) {
+    $('rows').innerHTML =
+      `<tr><td colspan="8" class="muted">Could not load patients: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+function render() {
+  $('empty').hidden = patients.length > 0;
+  $('rows').innerHTML = patients.map((p) => `
+    <tr data-id="${p.patient_id}">
+      <td><div class="name">${esc(p.full_name)}</div>
+          <div class="muted">${dash(p.email)}</div></td>
+      <td class="mono">${esc(p.date_of_birth_us)}</td>
+      <td class="mono">${p.age}</td>
+      <td>${esc(p.sex)}</td>
+      <td class="mono">${esc(p.phone_number_formatted)}</td>
+      <td>${esc(p.city)}, ${esc(p.state)}</td>
+      <td class="muted">${shortDate(p.created_at)}</td>
+      <td>${p.deleted_at ? '<span class="pill gray">deleted</span>' : '<span class="pill">active</span>'}</td>
+    </tr>`).join('');
+}
+
+async function openDrawer(id) {
+  const p = patients.find((x) => x.patient_id === id);
+  if (!p) return;
+
+  $('drawer').innerHTML = `
+    <button class="close" id="close">Close</button>
+    <h2>${esc(p.full_name)}</h2>
+    <div class="muted">${esc(p.date_of_birth_us)} · ${p.age} years old · ${esc(p.sex)}</div>
+    <dl>
+      <dt>Patient ID</dt><dd class="mono" style="font-size:12px">${esc(p.patient_id)}</dd>
+      <dt>Phone</dt><dd class="mono">${esc(p.phone_number_formatted)}</dd>
+      <dt>Email</dt><dd>${dash(p.email)}</dd>
+      <dt>Address</dt><dd>${esc(p.address_line_1)}${p.address_line_2 ? ', ' + esc(p.address_line_2) : ''}<br>${esc(p.city)}, ${esc(p.state)} ${esc(p.zip_code)}</dd>
+      <dt>Insurance</dt><dd>${dash(p.insurance_provider)}${p.insurance_member_id ? ' · <span class="mono">' + esc(p.insurance_member_id) + '</span>' : ''}</dd>
+      <dt>Language</dt><dd>${dash(p.preferred_language)}</dd>
+      <dt>Emergency contact</dt><dd>${dash(p.emergency_contact_name)}${p.emergency_contact_phone ? ' · ' + esc(p.emergency_contact_phone) : ''}</dd>
+      <dt>Registered</dt><dd class="muted">${dateTime(p.created_at)}</dd>
+      <dt>Last updated</dt><dd class="muted">${dateTime(p.updated_at)}</dd>
+      ${p.deleted_at ? `<dt>Deleted</dt><dd class="muted">${dateTime(p.deleted_at)}</dd>` : ''}
+    </dl>
+    <div id="related"><span class="muted">Loading call history…</span></div>`;
+
+  $('drawer').classList.add('open');
+  $('drawer').setAttribute('aria-hidden', 'false');
+  $('overlay').classList.add('open');
+  $('close').onclick = closeDrawer;
+
+  try {
+    const [{ calls }, { appointments }] = await Promise.all([
+      api(`/patients/${id}/calls`),
+      api(`/patients/${id}/appointments`),
+    ]);
+
+    let html = '';
+    if (appointments.length) {
+      html += '<h3 class="section">Appointments</h3>' + appointments.map((a) =>
+        `<div class="muted">${dateTime(a.scheduled_for)} — ${esc(a.reason || 'Visit')} <span class="pill">${esc(a.status)}</span></div>`).join('');
+    }
+    html += '<h3 class="section">Call history</h3>';
+    html += calls.length
+      ? calls.map((c) => `
+          <div class="muted" style="margin-bottom:6px">
+            ${dateTime(c.created_at)} · ${esc(c.outcome)}${c.duration_seconds ? ' · ' + c.duration_seconds + 's' : ''}
+          </div>
+          ${c.summary ? `<div style="margin-bottom:8px">${esc(c.summary)}</div>` : ''}
+          ${c.transcript ? `<div class="transcript">${esc(c.transcript)}</div>` : '<div class="muted">No transcript stored.</div>'}`).join('<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">')
+      : '<div class="muted">No calls recorded against this patient yet.</div>';
+
+    $('related').innerHTML = html;
+  } catch {
+    $('related').innerHTML = '<span class="muted">Could not load call history.</span>';
+  }
+}
+
+function closeDrawer() {
+  $('drawer').classList.remove('open');
+  $('drawer').setAttribute('aria-hidden', 'true');
+  $('overlay').classList.remove('open');
+}
+
+$('rows').addEventListener('click', (e) => {
+  const row = e.target.closest('tr[data-id]');
+  if (row) openDrawer(row.dataset.id);
+});
+$('overlay').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+$('refresh').addEventListener('click', () => { loadPatients(); loadStats(); });
+$('scope').addEventListener('change', loadPatients);
+
+let debounce;
+$('q').addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(loadPatients, 250);
+});
+
+loadHealth();
+loadStats();
+loadPatients();
+// Light polling so a registration completed on a live call shows up while the
+// reviewer is watching the dashboard.
+setInterval(() => { loadPatients(); loadStats(); }, 15000);
+</script>
+</body>
+</html>
